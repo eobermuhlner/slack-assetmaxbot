@@ -1,7 +1,7 @@
 package ch.obermuhlner.slack.simplebot
 
 import ch.obermuhlner.slack.simplebot.TranslationService.Translation
-import ch.obermuhlner.slack.simplebot.xentis.*
+import ch.obermuhlner.slack.simplebot.impl.*
 import java.util.Properties
 import com.ullink.slack.simpleslackapi.impl.SlackSessionFactory
 import com.ullink.slack.simpleslackapi.SlackUser
@@ -15,25 +15,10 @@ import com.ullink.slack.simpleslackapi.impl.ChannelHistoryModuleFactory
 import java.util.regex.Pattern
 import java.time.*
 import java.time.format.DateTimeParseException
-import com.jcabi.ssh.Shell
-import com.jcabi.ssh.SshByPassword
-import org.ccil.cowan.tagsoup.jaxp.SAXParserImpl
-import org.xml.sax.Attributes
-import org.xml.sax.SAXParseException
-import org.xml.sax.helpers.DefaultHandler
 import java.io.*
-import java.net.URL
-import javax.xml.parsers.SAXParserFactory
 
 class SimpleBot(
-		private val sysCodeService: SysCodeService = XentisSysCodeService(),
-		private val propertiesTranslations: PropertiesTranslationService = XentisPropertiesTranslationService(),
-		private val dbSchemaService: DbSchemaService = XentisDbSchemaService(),
-		private val keyMigrationService: KeyMigrationService = XentisKeyMigrationService(),
-		private var xentisServerSearchHostnames: List<String> = listOf(),
-		private var xentisServerSearchCommand: String = "xentis stat",
-		private var xentisServerPrefixHost: String = "pdvmapp",
-		private var xentisServerPrefixCommand: String = "xentis stat") {
+		private val propertiesTranslations: PropertiesTranslationService = PropertiesTranslationServiceImpl()) {
 
 	private lateinit var session: SlackSession
 	private lateinit var user: SlackUser
@@ -58,7 +43,7 @@ class SimpleBot(
 				}
 			}, CommandHandler("refresh") { event, _, heuristic ->
 				if (!heuristic) {
-					respond(event, "Refreshing information about Xentis...")
+					respond(event, "Refreshing information...")
 					loadData()
 					respondStatus(event)
 					true
@@ -86,57 +71,6 @@ class SimpleBot(
 				} else {
 					false
 				}
-			}, SingleArgumentCommandHandler("id") { event, arg, heuristic ->
-				val xentisId = parseXentisId(arg)
-				if (xentisId != null) {
-					respondAnalyzeXentisId(event, xentisId.first, xentisId.second, failMessage = !heuristic)
-				} else {
-					if (!heuristic) {
-						respond(event, "`$arg` is a not a valid Xentis id. It must be 16 hex digits.")
-					}
-					false
-				}
-			}, SingleJoinedArgumentCommandHandler("syscodes") { event, arg, heuristic ->
-				if (!heuristic) {
-					respondXentisPartialSysCodeText(event, arg, failMessage = !heuristic)
-				} else {
-					false
-				}
-			}, SingleJoinedArgumentCommandHandler("syscode") { event, arg, heuristic ->
-				val xentisId = parseXentisId(arg)
-				if (!heuristic || xentisId != null || arg.startsWith("C_")) {
-					if (xentisId != null) {
-						respondXentisSysCodeId(event, xentisId.first, failMessage = !heuristic)
-					} else {
-						respondXentisSysCodeText(event, arg, failMessage = !heuristic)
-					}
-				} else {
-					false
-				}
-			}, SingleArgumentCommandHandler("classpart") { event, arg, heuristic ->
-				val xentisId = parseXentisId(arg, 4)
-				if (xentisId != null) {
-					respondAnalyzeXentisClassPart(event, xentisId.second, failMessage = !heuristic)
-				} else {
-					if (!heuristic) {
-						respond(event, "`$arg` is a not a valid Xentis classpart. It must be 4 hex digits.")
-					}
-					false
-				}
-			}, SingleArgumentCommandHandler("tables") { event, arg, heuristic ->
-				if (!heuristic || arg.isUpperCase()) {
-					respondXentisPartialTableName(event, arg, failMessage = !heuristic)
-				} else {
-					false
-				}
-			}, SingleArgumentCommandHandler("table") { event, arg, heuristic ->
-				if (!heuristic || arg.isUpperCase()) {
-					respondXentisTableName(event, arg, failMessage = !heuristic)
-				} else {
-					false
-				}
-			}, SingleArgumentCommandHandler("key") { event, arg, heuristic ->
-				respondXentisKey(event, arg, failMessage = !heuristic)
 			}, SingleArgumentCommandHandler("dec") { event, arg, heuristic ->
 				if (!heuristic) {
 					respondNumberConversion(event, arg.removeSuffix("L"), 10, introMessage = false)
@@ -244,20 +178,6 @@ class SimpleBot(
 				} else {
 					false
 				}
-            }, SingleArgumentCommandHandler("xentis") { event, arg, heuristic ->
-                if (!heuristic) {
-                    respondXentisServerStatus(event, arg)
-                    true
-                } else {
-                    false
-                }
-            }, SingleArgumentCommandHandler("db") { event, arg, heuristic ->
-                if (!heuristic) {
-                    respondXentisDbStatus(event, arg)
-                    true
-                } else {
-                    false
-                }
             }, SingleJoinedArgumentCommandHandler("translate") { event, arg, _ ->
                respondSearchTranslations(event, arg)
 			}
@@ -291,33 +211,11 @@ class SimpleBot(
 
 		user = session.user()
 		adminUser = findUser(properties.getProperty("admin.user"))
-		xentisServerSearchHostnames = properties.getProperty("xentis.server.search.hosts").split(",").map {it.trim()}
-		xentisServerSearchCommand = properties.getProperty("xentis.server.search.command", xentisServerSearchCommand)
-		xentisServerPrefixHost = properties.getProperty("xentis.server.prefix.host", xentisServerPrefixHost)
-		xentisServerPrefixCommand = properties.getProperty("xentis.server.prefix.command", xentisServerPrefixCommand)
 
-		val xentisSchemaFileName = properties.getProperty("xentis.schema")
-		if (xentisSchemaFileName != null) {
-			dbSchemaService.parse(FileReader(xentisSchemaFileName))
-		}
-
-		val xentisKeyMigrationFileName = properties.getProperty("xentis.keymigration")
-		if (xentisKeyMigrationFileName != null) {
-			keyMigrationService.parse(FileReader(xentisKeyMigrationFileName))
-			translations.addAll(keyMigrationService.translations)
-		}
-
-		val xentisSysCodeFileName = properties.getProperty("xentis.syscode")
-		val xentisSysSubsetFileName = properties.getProperty("xentis.syssubset")
-		if (xentisSysCodeFileName != null && xentisSysSubsetFileName != null) {
-			sysCodeService.parseSysCodes(FileReader(xentisSysCodeFileName))
-            sysCodeService.parseSysSubsets(FileReader(xentisSysSubsetFileName))
-		}
-        sysCodeService.parseDbSchema(dbSchemaService)
+		//val languages = properties.getProperty("translation.languages").split(",").map {it.trim()}
 
 		loadPropertiesTranslations(properties)
 		translations.addAll(propertiesTranslations.translations)
-		translations.addAll(sysCodeService.translations)
 	}
 
 	private fun findUser(user: String?): SlackUser? {
@@ -423,25 +321,6 @@ class SimpleBot(
 		}
 	}
 
-	private fun parseXentisId(text: String, length: Int = 16): Pair<Long, String>? {
-		var hexText = text
-		var id = text.toLongOrNull(16)
-
-		if (id == null) {
-			id = text.toLongOrNull(10)
-			if (id == null) {
-				return null
-			}
-			hexText = id.toString(16)
-		}
-
-		if (hexText.length != length) {
-			return null
-		}
-
-		return Pair(id, hexText)
-	}
-
 	private fun parseCommand(command: String, line: String): String? {
 		if (line.startsWith(command)) {
 			return line.substring(command.length).trim()
@@ -470,44 +349,25 @@ class SimpleBot(
 				|You can ask me questions by giving me a command with an appropriate argument.
 				|Try it out by asking one of the following lines (just copy and paste into a new message):
 				|$bot help
-				|$bot id 108300000012be3c
-				|$bot classpart 1083
-				|$bot tables zuord
-				|$bot table portfolio
-				|$bot syscode 10510000940000aa
-				|$bot syscode C_InstParam_PseudoVerfall
-				|$bot key 1890
 				|$bot millis -11676096000000
 				|$bot millis 1600-01-01
 				|$bot hex c0defeed
 				|$bot dec 1234567890
-				|$bot xentis intui
 				|$bot translate interest
 				|
 				|If you talk with me without specifying a command, I will try to answer as best as I can (maybe giving multiple answers).
 				|Please try one of the following:
-				|$bot 108300000012be3c
-				|$bot 1083
-				|$bot PORTFOLIO
 				|$bot interest
 				|
 				|If you talk with me in a direct chat you do not need to prefix the messages with my name $bot.
 				|Please try one of the following:
 				|millis 1600-01-01
-				|xentis intui
-				|108300000012be3c
-				|1083
-				|portfolio
 				|interest
 				""".trimMargin())
 	}
 
 	private fun respondStatus(event: SlackMessagePosted) {
 			session.sendMessage(event.channel, """
-					|${dbSchemaService.getTableNames("").size} database tables
-					|${sysCodeService.findSysCodes("").size} syscodes
-					|${keyMigrationService.translations.size} keymigration translations
-					|${sysCodeService.translations.size} syscode translations
 					|${propertiesTranslations.translations.size} properties translations
 					|${translations.size} total translations
 					""".trimMargin())
@@ -563,149 +423,6 @@ class SimpleBot(
 		return listOf(days, hours, minutes, seconds, remainingMilliseconds)
 	}
 
-	private fun respondAnalyzeXentisId(event: SlackMessagePosted, id: Long, text: String, failMessage: Boolean=true): Boolean {
-		session.sendMessage(event.channel, "This is a Xentis id: $text = decimal $id")
-
-		return respondAnalyzeXentisClassPart(event, text, failMessage=failMessage)
-	}
-
-	private fun respondXentisSysCodeId(event: SlackMessagePosted, id: Long, failMessage: Boolean=true): Boolean {
-		val syscode = sysCodeService.getSysCode(id)
-
-		if (syscode == null) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "`${id.toString(16)}` is not a valid a Xentis syscode.")
-			}
-			return false
-		}
-
-		session.sendMessage(event.channel, sysCodeService.toMessage(syscode))
-		return true
-	}
-
-	private fun respondXentisPartialSysCodeText(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val syscodeResults = sysCodeService.findSysCodes(text)
-
-		if (syscodeResults.isEmpty()) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "No matching Xentis syscodes found for `$text`.")
-			}
-			return false
-		}
-
-		val syscodes = plural(syscodeResults.size, "syscode", "syscodes")
-		var message = "Found ${syscodeResults.size} $syscodes:\n"
-
-		for (syscode in syscodeResults) {
-			message += "${syscode.id.toString(16)} `${syscode.name}`\n"
-		}
-
-		session.sendMessage(event.channel, message)
-		return true
-	}
-
-	private fun respondXentisSysCodeText(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val syscodeResults = sysCodeService.findSysCodes(text)
-
-		if (syscodeResults.isEmpty()) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "No matching Xentis syscodes found for `$text`.")
-			}
-			return false
-		}
-
-		val syscodes = plural(syscodeResults.size, "syscode", "syscodes")
-		var message = "Found ${syscodeResults.size} $syscodes:\n"
-
-		limitedForLoop(10, 0, syscodeResults, { syscode ->
-			message += sysCodeService.toMessage(syscode)
-			message += "\n"
-		}, {_ ->
-			message += "..."
-		})
-
-		session.sendMessage(event.channel, message)
-		return true
-	}
-
-	private fun respondAnalyzeXentisClassPart(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val xentisClassPartText = text.substring(0, 4)
-		val xentisClassPart = java.lang.Long.parseLong(xentisClassPartText, 16) and 0xfff
-		val tableName = dbSchemaService.getTableName(xentisClassPart)
-
-		if (tableName != null) {
-			session.sendMessage(event.channel, "The classpart $xentisClassPartText indicates a Xentis table `$tableName`")
-			return true
-		} else {
-			if (failMessage) {
-				session.sendMessage(event.channel, "`$xentisClassPartText` is not a Xentis classpart.")
-			}
-		}
-		return false
-	}
-
-	private fun respondXentisTableName(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val tableName = text.toUpperCase()
-
-		val table = dbSchemaService.getTable(tableName)
-		if (table != null) {
-			session.sendFile(event.channel, table.toMessage().toByteArray(), "TABLE_$tableName.txt")
-		}
-
-		val tableId = dbSchemaService.getTableId(tableName)
-		if (tableId != null) {
-			val xentisClassPartText = (tableId or 0x1000).toString(16).padStart(4, '0')
-			session.sendMessage(event.channel, "The classpart of the Xentis table `$tableName` is $xentisClassPartText")
-		} else {
-			if (failMessage) {
-				session.sendMessage(event.channel, "`$tableName` is not a Xentis table.")
-			}
-			return false
-		}
-		return true
-	}
-
-	private fun respondXentisPartialTableName(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val tableNames = dbSchemaService.getTableNames(text).sorted()
-
-		if (tableNames.isEmpty()) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "No matching tables found.")
-			}
-			return false
-		}
-
-		val tables = plural(tableNames.size, "table", "tables")
-		var message = "_Found ${tableNames.size} matching $tables._\n"
-		for(tableName in tableNames) {
-			message += tableName + "\n"
-		}
-
-		session.sendMessage(event.channel, message)
-		return true
-	}
-
-	private fun respondXentisKey(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
-		val id = text.toIntOrNull()
-		if (id == null) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "`$text` is not a valid Xentis key id (must be an integer value).")
-			}
-			return false
-		}
-
-		val keyNode = keyMigrationService.getKeyNode(id)
-		if (keyNode == null) {
-			if (failMessage) {
-				session.sendMessage(event.channel, "No Xentis key node found for id $id.")
-			}
-			return false
-		}
-
-		session.sendMessage(event.channel, keyMigrationService.toMessage(keyNode))
-		return true
-	}
-
 	private fun respondNumberConversion(event: SlackMessagePosted, text: String, base: Int, failMessage: Boolean=true, introMessage: Boolean=true): Boolean {
 		val value = text.toLongOrNull(base)
 
@@ -738,126 +455,6 @@ class SimpleBot(
 		}
 		return true
 	}
-
-	private fun respondXentisServerStatus(event: SlackMessagePosted, name: String): Boolean {
-		var success = false
-
-        if (name.startsWith(xentisServerPrefixHost)) {
-            try {
-				respond(event, "Checking xentis server $name")
-                val shell = SshByPassword(name, 22, "xen", "xen")
-				val response = Shell.Plain(shell).exec(xentisServerPrefixCommand)
-                respond(event, """
-    				|User `xen` on host `$name` responded with:
-    				|```$response```""".trimMargin())
-                success = true
-            } catch (ex: Exception) {
-				respond(event, "User `xen` on host `$name` failed with ${ex.javaClass.simpleName} ${ex.message}")
-            }
-        } else {
-            // old xentis servers
-            for (hostname in xentisServerSearchHostnames) {
-                try {
-                    val shell = SshByPassword(hostname, 22, name, name)
-                    val response = Shell.Plain(shell).exec(xentisServerSearchCommand)
-                    respond(event, """
-    				|User `$name` on host `$hostname` responded with:
-    				|```$response```""".trimMargin())
-                    success = true
-                } catch (ex: Exception) {
-                    if (ex.message == "com.jcraft.jsch.JSchException: Auth cancel") {
-                        // ignore
-                    } else {
-                        respond(event, "User `$name` on host `$hostname` failed with ${ex.javaClass.simpleName} ${ex.message}")
-                    }
-                }
-            }
-			if (!success) {
-				respond(event, "No user `$name` found on any of the hosts ${xentisServerSearchHostnames.joinToString(", ", "`", "`")}.")
-			}
-		}
-
-		return success
-	}
-
-    private fun respondXentisDbStatus(event: SlackMessagePosted, name: String): Boolean {
-        var success = false
-
-		val message = StringBuilder()
-		val line = StringBuilder()
-		var tdClass: String? = null
-
-        val classPadding: Map<String, Int> = mapOf(
-                "servicename" to 7,
-                "schemaname" to 30,
-                "size" to 6,
-                "impdat" to 8,
-                "responsible" to 10,
-                "locked" to 10,
-                "comment" to 30)
-        val classLeftPadding: Set<String> = setOf("size")
-
-        val handler = object : DefaultHandler() {
-            private var insideTr: Boolean = false
-            private var insideTd: Boolean = false
-
-            override fun startElement(uri: String?, localName: String, qName: String, attributes: Attributes) {
-                if (localName == "tr") {
-                    insideTr = true
-                }
-                if (insideTr && localName == "td") {
-                    insideTd = true
-					tdClass = attributes.getValue("class")
-                }
-            }
-
-            override fun endElement(uri: String, localName: String, qName: String) {
-                if (localName == "tr") {
-                    insideTr = false
-
-					if (line.contains(name)) {
-						message.append(line)
-						message.append("\n")
-						if (message.length > 3000) {
-							respond(event, "```\n$message\n```")
-							success = true
-							message.setLength(0)
-						}
-					}
-					line.setLength(0)
-                }
-                if (insideTr && localName == "td") {
-                    insideTd = false
-                }
-            }
-
-            override fun characters(ch: CharArray, start: Int, length: Int) {
-				val text = String(ch, start, length)
-				if (classPadding.containsKey(tdClass) && text != "N.A.") {
-                    val paddedText = if (classLeftPadding.contains(tdClass)) {
-                            text.padStart(classPadding[tdClass]!!)
-                        } else {
-                            text.padEnd(classPadding[tdClass]!!)
-                        }
-                    line.append(paddedText)
-                    line.append(" ")
-				}
-            }
-        }
-
-        val url = URL("http://dbschemas/")
-		val parser = SAXParserImpl.newInstance(null)
-        parser.parse(url.openStream(), handler)
-
-		if (message.isNotEmpty()) {
-			respond(event, "```\n$message\n```")
-			success = true
-		} else {
-            session.sendMessage(event.channel, "No database found.")
-        }
-
-		return success
-    }
 
 	private fun respondSearchTranslations(event: SlackMessagePosted, text: String, failMessage: Boolean=true): Boolean {
 		if (text == "") {

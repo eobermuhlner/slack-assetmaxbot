@@ -1,4 +1,4 @@
-package ch.obermuhlner.slack.simplebot.xentis
+package ch.obermuhlner.slack.simplebot.impl
 
 import ch.obermuhlner.slack.simplebot.PropertiesTranslationService
 import ch.obermuhlner.slack.simplebot.TranslationService.Translation
@@ -7,13 +7,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Before
 import java.util.*
 
-class XentisPropertiesTranslationServiceTest {
+class PropertiesTranslationServiceImplTest {
 
     lateinit var service : PropertiesTranslationService
 
     @Before
     fun setup() {
-        service = XentisPropertiesTranslationService()
+        service = PropertiesTranslationServiceImpl()
 
         val englishProperties = Properties()
         val germanProperties = Properties()

@@ -1,10 +1,10 @@
-package ch.obermuhlner.slack.simplebot.xentis
+package ch.obermuhlner.slack.simplebot.impl
 
 import ch.obermuhlner.slack.simplebot.PropertiesTranslationService
 import ch.obermuhlner.slack.simplebot.TranslationService.Translation
 import java.util.*
 
-class XentisPropertiesTranslationService : PropertiesTranslationService {
+class PropertiesTranslationServiceImpl : PropertiesTranslationService {
 
 	private val _translations = mutableSetOf<Translation>()
 	
