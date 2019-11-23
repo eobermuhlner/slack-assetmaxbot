@@ -26,8 +26,6 @@ class SimpleBot(
 
 	private val observedChannelIds = HashSet<String>()
 
-	private val translations = mutableSetOf<Translation>()
-
 	private val startMilliseconds = System.currentTimeMillis()
 	private val explicitCommandCount : MutableMap<String, Int> = mutableMapOf()
 	private val heuristicCommandCount : MutableMap<String, Int> = mutableMapOf()
@@ -212,10 +210,9 @@ class SimpleBot(
 		user = session.user()
 		adminUser = findUser(properties.getProperty("admin.user"))
 
-		//val languages = properties.getProperty("translation.languages").split(",").map {it.trim()}
+		val languages = properties.getProperty("translation.languages").split(",").map {it.trim()}
 
-		loadPropertiesTranslations(properties)
-		translations.addAll(propertiesTranslations.translations)
+		loadPropertiesTranslations(properties, languages)
 	}
 
 	private fun findUser(user: String?): SlackUser? {
@@ -264,23 +261,24 @@ class SimpleBot(
 		}
 	}
 
-	private fun loadPropertiesTranslations(properties: Properties) {
+	private fun loadPropertiesTranslations(properties: Properties, languages: List<String>) {
 		propertiesTranslations.clear()
 
 		var translationIndex = 0
 
-		var success: Boolean
+		var success = true
 		do {
 			translationIndex++
-			val file1 = properties.getProperty("translation.${translationIndex}.source.properties")
-			val file2 = properties.getProperty("translation.${translationIndex}.target.properties")
+			for (language in languages) {
+				val file = properties.getProperty("translation.${translationIndex}.${language}.properties")
 
-			if (file1 != null && file2 != null) {
-				propertiesTranslations.parse(loadProperties(file1), loadProperties(file2))
-				success = true
-			} else {
-				success = false
+				if (file != null) {
+					propertiesTranslations.parse(language, loadProperties(file))
+				} else {
+					success = false
+				}
 			}
+			propertiesTranslations.buildIndex()
 		} while (success)
 	}
 
@@ -369,7 +367,6 @@ class SimpleBot(
 	private fun respondStatus(event: SlackMessagePosted) {
 			session.sendMessage(event.channel, """
 					|${propertiesTranslations.translations.size} properties translations
-					|${translations.size} total translations
 					""".trimMargin())
 	}
 
@@ -464,57 +461,40 @@ class SimpleBot(
 			return false
 		}
 
-		val perfectResults = mutableSetOf<Translation>()
-		val partialResults = mutableSetOf<Translation>()
-		for(translation in translations) {
-			if (translation.english.equals(text, ignoreCase=true)) {
-				perfectResults.add(translation)
+		val translation = propertiesTranslations.find(text.toLowerCase())
+		if (translation != null) {
+			var message = "Found translations for exactly this term:\n"
+			for (translationEntry in translation.entries) {
+				val language = translationEntry.key
+				val texts = translationEntry.value
+				message += "${language} :"
+				for (text in texts) {
+					message += "  _${text}_\n"
+				}
 			}
-			if (translation.german.equals(text, ignoreCase=true)) {
-				perfectResults.add(translation)
-			}
-			if (translation.english.contains(text, ignoreCase=true)) {
-				partialResults.add(translation)
-			}
-			if (translation.german.contains(text, ignoreCase=true)) {
-				partialResults.add(translation)
-			}
-		}
-
-		if (perfectResults.size > 0) {
-			val translations = plural(perfectResults.size, "translation", "translations")
-			var message = "Found ${perfectResults.size} $translations for exactly this term:\n"
-			limitedForLoop(10, 0, sortedTranslations(perfectResults), { result ->
-				message += "_${result.english}_ : _${result.german}_ \n"
-			}, { _ ->
-				message += "...)\n"
-			})
 			session.sendMessage(event.channel, message)
 		}
 
-		if (partialResults.size > perfectResults.size) {
-			val translations = plural(partialResults.size, "translation", "translations")
-			var message = "Found ${partialResults.size} $translations that partially matched this term:\n"
-			limitedForLoop(10, 0, sortedTranslations(partialResults), { result ->
-				message += "_${result.english}_ : _${result.german}_ \n"
+		val partialTranslations = propertiesTranslations.findPartial(text.toLowerCase())
+
+		if (true) {
+			val translationsText = plural(partialTranslations.size, "translation", "translations")
+			var message = "Found ${partialTranslations.size} $translationsText that partially matched this term:\n"
+			limitedForLoop(10, 0, partialTranslations, { translation ->
+				for (translationEntry in translation.entries) {
+					val language = translationEntry.key
+					val texts = translationEntry.value
+					message += "${language} :"
+					for (text in texts) {
+						message += "  _${text}_\n"
+					}
+				}
 			}, { _ ->
 				message += "...\n"
 			})
 			session.sendMessage(event.channel, message)
-		} else {
-			var message = "No translations found."
-			if (!failMessage) {
-				return false
-			}
-			session.sendMessage(event.channel, message)
 		}
 		return true
-	}
-
-	private fun sortedTranslations(collection: Collection<Translation>) : List<Translation> {
-		val list: MutableList<Translation> = mutableListOf()
-		list.addAll(collection)
-		return list.sortedWith(compareBy({ it.english.length }, { it.german.length }, { it.english }, { it.german }))
 	}
 
 	private fun connected(s: SlackSession): SlackSession {

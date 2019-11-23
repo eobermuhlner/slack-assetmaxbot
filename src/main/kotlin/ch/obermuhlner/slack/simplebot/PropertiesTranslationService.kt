@@ -6,5 +6,7 @@ interface PropertiesTranslationService : TranslationService {
 
     fun clear()
 
-    fun parse(englishTranslations: Properties, germanTranslations: Properties)
+    fun parse(language: String, translations: Properties)
+
+    fun buildIndex()
 }
