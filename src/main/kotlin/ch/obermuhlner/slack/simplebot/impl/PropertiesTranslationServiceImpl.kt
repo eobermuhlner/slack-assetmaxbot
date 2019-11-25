@@ -8,6 +8,8 @@ class PropertiesTranslationServiceImpl : PropertiesTranslationService {
 
 	private val _translations = mutableSetOf<Translation>()
 
+	private val keyToTranslations = mutableMapOf<String, MutableMap<String, String>>()
+
 	private val mappedTranslations = mutableMapOf<String, MutableMap<String, MutableSet<String>>>()
 	
 	override val translations get() = _translations
@@ -19,14 +21,14 @@ class PropertiesTranslationServiceImpl : PropertiesTranslationService {
 	override fun parse(language: String, translations: Properties) {
 		for(key in translations.keys) {
 			if(key is String) {
-				val text = translations.getProperty(key)
+				val text = translations.getProperty(key).trim()
 				_translations.add(Translation(language, key, text))
 			}
 		}
 	}
 
 	override fun buildIndex() {
-		val keyToTranslations = mutableMapOf<String, MutableMap<String, String>>()
+		keyToTranslations
 		for (translation in translations) {
 			val langToText = keyToTranslations.getOrPut(translation.key) { mutableMapOf() }
 			langToText[translation.language] = translation.text
@@ -60,7 +62,7 @@ class PropertiesTranslationServiceImpl : PropertiesTranslationService {
 	override fun findPartial(text: String): List<Map<String, Set<String>>> {
 		val matches = mutableListOf<Map<String, Set<String>>>()
 		for (entry in mappedTranslations.entries) {
-			if (entry.key.contains(text)) {
+			if (entry.key.contains(text) && !entry.key.equals(text)) {
 				matches += entry.value
 			}
 		}

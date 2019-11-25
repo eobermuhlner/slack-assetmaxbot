@@ -1,27 +1,44 @@
 package ch.obermuhlner.slack.simplebot
 
-import ch.obermuhlner.slack.simplebot.TranslationService.Translation
-import ch.obermuhlner.slack.simplebot.impl.*
-import java.util.Properties
-import com.ullink.slack.simpleslackapi.impl.SlackSessionFactory
-import com.ullink.slack.simpleslackapi.SlackUser
-import com.google.gson.GsonBuilder
+import ch.obermuhlner.slack.simplebot.impl.PropertiesTranslationServiceImpl
 import com.google.gson.FieldNamingPolicy
+import com.google.gson.GsonBuilder
 import com.ullink.slack.simpleslackapi.SlackAttachment
 import com.ullink.slack.simpleslackapi.SlackChannel
 import com.ullink.slack.simpleslackapi.SlackSession
+import com.ullink.slack.simpleslackapi.SlackUser
 import com.ullink.slack.simpleslackapi.events.SlackMessagePosted
 import com.ullink.slack.simpleslackapi.impl.ChannelHistoryModuleFactory
-import java.util.regex.Pattern
+import com.ullink.slack.simpleslackapi.impl.SlackSessionFactory
+import org.apache.http.client.methods.HttpGet
+import org.apache.http.client.methods.HttpPost
+import org.apache.http.entity.StringEntity
+import org.apache.http.impl.client.HttpClientBuilder
+import org.apache.http.util.EntityUtils
+import java.io.BufferedReader
+import java.io.FileReader
+import java.io.PrintWriter
+import java.io.StringWriter
 import java.time.*
 import java.time.format.DateTimeParseException
-import java.io.*
+import java.util.*
+import java.util.regex.Pattern
+import kotlin.collections.HashMap
+import kotlin.collections.HashSet
+import kotlin.collections.List
+import kotlin.collections.MutableMap
+import kotlin.collections.listOf
+import kotlin.collections.map
+import kotlin.collections.mutableMapOf
+import kotlin.collections.set
+import kotlin.collections.sorted
 
 class SimpleBot(
 		private val propertiesTranslations: PropertiesTranslationService = PropertiesTranslationServiceImpl()) {
 
 	private lateinit var session: SlackSession
 	private lateinit var user: SlackUser
+	private lateinit var languages: List<String>
 	private var adminUser: SlackUser? = null
 
 	private val observedChannelIds = HashSet<String>()
@@ -210,7 +227,7 @@ class SimpleBot(
 		user = session.user()
 		adminUser = findUser(properties.getProperty("admin.user"))
 
-		val languages = properties.getProperty("translation.languages").split(",").map {it.trim()}
+		languages = properties.getProperty("translation.languages").split(",").map {it.trim()}
 
 		loadPropertiesTranslations(properties, languages)
 	}
@@ -461,40 +478,97 @@ class SimpleBot(
 			return false
 		}
 
-		val translation = propertiesTranslations.find(text.toLowerCase())
-		if (translation != null) {
-			var message = "Found translations for exactly this term:\n"
-			for (translationEntry in translation.entries) {
-				val language = translationEntry.key
-				val texts = translationEntry.value
-				message += "${language} :"
-				for (text in texts) {
-					message += "  _${text}_\n"
-				}
-			}
-			session.sendMessage(event.channel, message)
-		}
-
-		val partialTranslations = propertiesTranslations.findPartial(text.toLowerCase())
-
 		if (true) {
+			val partialTranslations = propertiesTranslations.findPartial(text.toLowerCase())
+			Collections.sort(partialTranslations) { o1, o2 ->
+				val v1 = o1["en"]?.stream()?.mapToInt{it.length}?.sum() ?: Int.MAX_VALUE
+				val v2 = o2["en"]?.stream()?.mapToInt{it.length}?.sum() ?: Int.MAX_VALUE
+				Integer.compare(v1, v2)
+			}
+
 			val translationsText = plural(partialTranslations.size, "translation", "translations")
 			var message = "Found ${partialTranslations.size} $translationsText that partially matched this term:\n"
-			limitedForLoop(10, 0, partialTranslations, { translation ->
+			limitedForLoop(5, 0, partialTranslations, { translation ->
 				for (translationEntry in translation.entries) {
 					val language = translationEntry.key
 					val texts = translationEntry.value
-					message += "${language} :"
+					message += "*${language}*:"
 					for (text in texts) {
-						message += "  _${text}_\n"
+						message += "\t_${text}_\n"
 					}
 				}
+				message += "\n"
 			}, { _ ->
 				message += "...\n"
 			})
 			session.sendMessage(event.channel, message)
 		}
+
+		if (true) {
+			val translation = propertiesTranslations.find(text.toLowerCase())
+			if (translation != null) {
+				var message = "Found translations for exactly this term:\n"
+				for (translationEntry in translation.entries) {
+					val language = translationEntry.key
+					val texts = translationEntry.value
+					message += "*${language}*:"
+					for (text in texts) {
+						message += "\t_${text}_\n"
+					}
+				}
+				session.sendMessage(event.channel, message)
+			} else {
+				var message = "No exact translations found."
+				if (!failMessage) {
+					return false
+				}
+				session.sendMessage(event.channel, message)
+			}
+		}
+
+		if (true) {
+			var message = "Yandex translation:\n"
+			for (language in languages) {
+				val translated = webTranslate(text, language)
+				if (translated != null) {
+					message += "    *${language}*: _${translated}_\n"
+				}
+			}
+			session.sendMessage(event.channel, message)
+		}
+
 		return true
+	}
+
+	private fun webTranslate(sourceText: String, targetLanguage: String): String? {
+		val client = HttpClientBuilder.create().build()
+
+		val url = "https://translate.yandex.net/api/v1.5/tr/translate"
+		val key = "trnsl.1.1.20191123T134447Z.ae9e3c46eb330538.20ae32810f26128eda4371a0d32cbb96e46ecde3"
+		val lang = "$targetLanguage"
+		val format = "plain"
+		val text = "$sourceText"
+
+		val request = HttpPost("$url?key=$key&lang=$lang&format=$format")
+
+		request.entity = StringEntity("text=$text")
+
+		request.addHeader("Content-Type", "application/x-www-form-urlencoded")
+
+		val response = client.execute(request)
+		val responseText = EntityUtils.toString(response.entity)
+		println("Response: $responseText")
+
+		client.close()
+
+		val pattern = ".*<text>(.*)</text>".toRegex()
+		val match = pattern.find(responseText)
+
+		if (match != null) {
+			return match.groups[1]?.value
+		}
+
+		return null
 	}
 
 	private fun connected(s: SlackSession): SlackSession {
